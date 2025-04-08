@@ -5,5 +5,14 @@ Cally-Lang is a great alternative if you don't care about performace, since the 
 Why power Shell?<br/>
 ![360_F_166100342_KbTGIRrnrlwGDZSXSMpH3zfn2dxyTKae](https://github.com/user-attachments/assets/5c8e4128-cc89-480e-9142-820d99d6366d)<br/>
 
-# Usage and Syntax
-
+# Usage and Syntax<br/>
+## Initialization syntax<br/>
+Main(args){<br/>
+... <br/>
+}<br/>
+## Varible syntax<br/>
+varible1 = "Hello";<br/>
+varible2 = 1234;<br/>
+## Print and input syntax<br/>
+varible = input("Prompt for user:")<br/>
+print("Name" + name varible)<br/>

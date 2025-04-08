@@ -8,11 +8,12 @@ Why power Shell?<br/>
 # Usage and Syntax<br/>
 ## Initialization syntax<br/>
 Main(args){<br/>
+// comments
 ... <br/>
 }<br/>
 ## Varible syntax<br/>
-varible1 = "Hello";<br/>
-varible2 = 1234;<br/>
+varible1 = "Hello"; // String literal <br/>
+varible2 = 1234; // Integer literal<br/>
 ## Print and input syntax<br/>
 varible = input("Prompt for user:")<br/>
-print("Name" + name varible)<br/>
+print("Name" + varible)<br/>

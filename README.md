@@ -163,10 +163,9 @@ Cally‑Lang allows embedding native PowerShell code using the `p{ … }` syntax
 Main {
     a = "Hello Cally-Lang";
     x = p{
-         $s = ${{ a }};
-         return $s.Length;
+         return Get-Date
     };
-    print("The length of the string is: " + x + "\n");
+    print(x);
 }
 ```
 

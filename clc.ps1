@@ -6,19 +6,20 @@
       - Switch flags:
             -ast : Outputs the AST (in JSON format).
             -ts  : Outputs the token stream.
-      - The built‐in input function accepts an optional prompt (similar to Python's input).
+	  - args:
+			- additional aguments you would want to add on start up
     Usage:
-      .\clc.ps1 <PathToYourProgram.clp> [-ast] [-ts]
+      .\clc.ps1 <Path_To_Your_Program.clp> <args> [-ast] [-ts] <br/>
 #>
 
 param(
     [Parameter(Mandatory = $true)]
     [string]$FilePath,
+	[Parameter(ValueFromRemainingArguments=$true)]
+	$LangArgs,
     [switch]$ast,
     [switch]$ts
 )
-
-$global:Env["args"] = $LangArgs  
 
 if (!(Test-Path $FilePath)) {
     Write-Error "File not found: $FilePath"
@@ -598,10 +599,17 @@ function ParseProgram() {
         $col  = if ($token) { $token.columnStart } else { "-" }
         throw ("Program must start with 'Main'. Found '{0}' at line {1}, col {2}." -f ($token.value), $line, $col)
     }
-    $dummy = ExpectToken "("
-    $paramToken = NextToken
-    if (-not $paramToken) { throw "Parse Error: Missing parameter in Main(...)" }
-    $dummy = ExpectToken ")"
+
+    # Check if the next token is "(" to parse parameters.
+    $next = PeekToken
+    if ($next -and $next.value -eq "(") {
+        $dummy = ExpectToken "("
+        $paramToken = NextToken
+		$global:Env[$paramToken.value] = $LangArgs  
+        if (-not $paramToken) { throw "Parse Error: Missing parameter in Main(...)" }
+        $dummy = ExpectToken ")"
+    }
+    
     $body = ParseBlock
     if (PeekToken -ne $null) {
         throw "Parse Error: Extra tokens remain in the input."
@@ -616,9 +624,11 @@ if ($ast) {
     $programAST | ConvertTo-Json -Depth 10 | Write-Host
 }
 
-$global:Env = @{}
-
-function Builtin_print($printv) {
+function Builtin_print {
+	param(
+	$printv, 
+	$type
+	)
     $output = ""
     foreach ($p in $printv) {
         # Check if the value is an array or a hashtable (object)
@@ -659,7 +669,7 @@ function Builtin_len {
 }
 
 $global:BuiltinFuncs = @{
-    "print"    = { param($value, $ignored = $null) Builtin_print $value }
+    "print"    = { param($value, $type) Builtin_print $value $type}
     "input"    = { param($value, $ignored = $null) Builtin_input $value }
     "len"      = { param($value, $type) Builtin_len $value $type }
 }
@@ -756,17 +766,25 @@ function EvalExpression($node) {
                 }
             }
         }
-        "FuncCall" {
-            $fname = $node.name
-            $vals = @()
-            foreach ($a in $node.args) { $vals += EvalExpression $a }
-            if ($global:BuiltinFuncs.ContainsKey($fname)) {
-                return & $global:BuiltinFuncs[$fname] $vals $global:Env[$node.args.name].getType().name
-            }
-            else {
-                throw ("Runtime Error [line {0}, col {1}]: Undefined function '{2}'" -f $node.line, $node.column, $fname)
-            }
-        }
+		"FuncCall" {
+			$fname = $node.name
+			$vals = @()
+			foreach ($a in $node.args) { 
+				 $vals += EvalExpression $a 
+			}
+			if ($fname -eq "len") {
+				 if (($vals.Count -eq 1) -and ($vals[0] -ne $null)) {
+					 $typeName = $vals[0].GetType().Name
+
+				 } else {
+					 throw "len expects one argument."
+				 }
+				 return & $global:BuiltinFuncs[$fname] $vals[0] $typeName
+			}
+			else {
+				 return & $global:BuiltinFuncs[$fname] $vals
+			}
+		}
         "ArrayLiteral" {
             $result = @()
             foreach ($element in $node.elements) {

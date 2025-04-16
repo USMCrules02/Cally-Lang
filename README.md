@@ -8,12 +8,19 @@ Why Powershell?<br/>
 # Usage and Syntax<br/>
 ## Initialization syntax<br/>
 Main(args){<br/>
-// comments
-... <br/>
+// comments are signified by a double slash
 }<br/>
-## Varible syntax<br/>
-varible1 = "Hello"; // String literal <br/>
-varible2 = 1234; // Integer literal<br/>
-## Print and input syntax<br/>
-varible = input("Prompt for user:")<br/>
-print("Name" + varible)<br/>
+## Varible Syntax<br/>
+string_Example = "Hello";<br/>
+int_Example = 1234;<br/>
+array_Example = [1,2,3,4];<br/>
+object_Example = { name: "Bob" , age: 30 };<br/><br/>
+## Print and Input Operator Syntax<br/>
+varible = input("Prompt for user: ")<br/>
+print("Name" + varible)<br/><br/>
+## Length Operator Syntax
+val = "abcd";<br/>
+arr = [1,2];
+len(val); // Result would be 4
+len(arr); // Result would be 2
+

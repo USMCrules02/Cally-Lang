@@ -2,9 +2,7 @@
     Cally Lang Interpreter in PowerShell
     This script tokenizes, parses, and evaluates a .clp file.
 
-    Enhancements:
-      - The tokenizer tracks line/column information for error messages.
-      - The parser produces errors with location info.
+    Parameters:
       - Switch flags:
             -ast : Outputs the AST (in JSON format).
             -ts  : Outputs the token stream.
@@ -43,7 +41,7 @@ function Tokenize($source) {
     $tokens = @()
     $lines = $source -split "`r?`n"
     $lineCount = $lines.Count
-    $symbols = @("(", ")", "{", "}", ";", ",", "+", "-", "*", "/", "%", "=", "<", ">", "!")
+    $symbols = @("(", ")", "{", "}", "[", "]", ";", ",", ".", "+", "-", "*", "/", "%", "=", "<", ">", "!", ":", "$")
     $multiCharOps = @("==", "!=", "<=", ">=", "&&", "||", "++", "--")
     $keywords = @("Main", "if", "else", "while", "for", "print", "input", "parseInt", "len")
     
@@ -179,14 +177,65 @@ function New-ASTNode($type, $props) {
     return [PSCustomObject]$node
 }
 
+function ParseArrayLiteral() {
+    $openBracket = NextToken  # Consume "["
+    $elements = @()
+    while ($true) {
+        $peek = PeekToken
+        if (-not $peek) { throw "Parse Error: Missing closing ']' for array literal." }
+        if ($peek.value -eq "]") { NextToken | Out-Null; break }
+        $element = ParseExpression
+        $elements += $element
+        $peek = PeekToken
+        if ($peek -and $peek.value -eq ",") { NextToken | Out-Null; continue }
+    }
+    return New-ASTNode "ArrayLiteral" @{
+        elements = $elements
+        line     = $openBracket.line
+        column   = $openBracket.columnStart
+    }
+}
+
+function ParseObjectLiteral() {
+    $openBrace = NextToken  # Consume "{"
+    $properties = @{}
+    while ($true) {
+        $peek = PeekToken
+        if (-not $peek) { throw "Parse Error: Missing closing '}' for object literal." }
+        if ($peek.value -eq "}") { NextToken | Out-Null; break }
+        
+        # Expect a key (identifier or string)
+        if ($peek.type -eq "Identifier" -or $peek.type -eq "String") {
+            $keyToken = NextToken
+            $key = $keyToken.value
+        }
+        else {
+            throw ("Parse Error [line {0}, col {1}]: Object keys must be identifiers or strings." `
+                   -f $peek.line, $peek.columnStart)
+        }
+        
+        $dummy = ExpectToken ":"  # consume colon
+        $value = ParseExpression
+        $properties[$key] = $value
+        
+        $peek = PeekToken
+        if ($peek -and $peek.value -eq ",") { NextToken | Out-Null; continue }
+    }
+    return New-ASTNode "ObjectLiteral" @{
+        properties = $properties
+        line       = $openBrace.line
+        column     = $openBrace.columnStart
+    }
+}
+
 function ParseExpression() {
-    $node = ParsePrimary
+    $node = ParsePostfix
     while ($true) {
         $token = PeekToken
         if (-not $token) { break }
         if ($token.type -eq "Operator" -or ($token.type -eq "Symbol" -and "+-*/%<>".Contains($token.value))) {
             $op = NextToken
-            $right = ParsePrimary
+            $right = ParsePostfix 
             $node = New-ASTNode "BinaryOp" @{
                 left   = $node
                 op     = $op.value
@@ -200,64 +249,107 @@ function ParseExpression() {
     return $node
 }
 
+function ParsePostfix() {
+    $node = ParsePrimary
+    while ($true) {
+        $token = PeekToken
+        if (-not $token) { break }
+        if ($token.value -eq "[") {
+            NextToken | Out-Null  # consume '['
+            $indexExpr = ParseExpression
+            $dummy = ExpectToken "]"  # capture the closing ']' token
+            $node = New-ASTNode "ArrayAccess" @{
+                base  = $node
+                index = $indexExpr
+                line  = $token.line
+                column = $token.columnStart
+            }
+        }
+        elseif ($token.value -eq ".") {
+            NextToken | Out-Null  # consume '.'
+            $propToken = PeekToken
+            if (-not $propToken -or ($propToken.type -ne "Identifier" -and $propToken.type -ne "String")) {
+                throw ("Parse Error [line {0}, col {1}]: Expected identifier after '.'" -f $token.line, $token.columnStart)
+            }
+            $prop = NextToken
+            $node = New-ASTNode "PropertyAccess" @{
+                base     = $node
+                property = $prop.value
+                line     = $prop.line
+                column   = $prop.columnStart
+            }
+        }
+        else {
+            break
+        }
+    }
+    return $node
+}
+
 function ParsePrimary() {
     $token = PeekToken
     if (-not $token) { throw "Parse Error: Unexpected end of input in expression." }
+    
+    # NEW: Check for the p{ ... } construct.
+    if ($token.type -eq "Identifier" -and $token.value -eq "p") {
+        # Peek ahead: if the next token is "{" then we parse the PS block.
+        $next = PeekToken
+        # Note: since "p" is an identifier, it’s already returned by PeekToken.
+        # We need to consume the "p" token and then ensure that the next token is "{"
+        $dummy = NextToken  # consume "p"
+        $next = PeekToken
+        if ($next -and $next.value -eq "{") {
+            return ParsePSBlock
+        }
+        else {
+            # If "p" is not followed by a block, treat it as a normal variable.
+            return New-ASTNode "Variable" @{
+                name = "p"
+                line = $token.line
+                column = $token.columnStart
+            }
+        }
+    }
+    
     switch ($token.type) {
         "Number" {
             NextToken | Out-Null
-            return New-ASTNode "Number" @{ value = $token.value; line = $token.line; column = $token.columnStart }
+            return New-ASTNode "Number" @{
+                value  = $token.value
+                line   = $token.line
+                column = $token.columnStart
+            }
         }
         "String" {
             NextToken | Out-Null
-            return New-ASTNode "String" @{ value = $token.value; line = $token.line; column = $token.columnStart }
+            return New-ASTNode "String" @{
+                value  = $token.value
+                line   = $token.line
+                column = $token.columnStart
+            }
         }
         "Identifier" {
             $identToken = NextToken
+            $varNode = New-ASTNode "Variable" @{
+                name   = $identToken.value
+                line   = $identToken.line
+                column = $identToken.columnStart
+            }
             $next = PeekToken
-            if ($next -and $next.value -eq "(") {
-                NextToken | Out-Null
-                $args = @()
-                while ($true) {
-                    $next = PeekToken
-                    if (-not $next) { throw "Parse Error: Missing closing ')' in function call." }
-                    if ($next.value -eq ")") { NextToken | Out-Null; break }
-                    $arg = ParseExpression
-                    $args += $arg
-                    $next = PeekToken
-                    if ($next -and $next.value -eq ",") { NextToken | Out-Null; continue }
-                }
-                return New-ASTNode "FuncCall" @{
-                    name   = $identToken.value
-                    args   = $args
-                    line   = $identToken.line
-                    column = $identToken.columnStart
+            if ($next -and $next.type -eq "Operator" -and ($next.value -in @("++", "--"))) {
+                $opToken = NextToken
+                return New-ASTNode "UnaryOp" @{
+                    op     = $opToken.value
+                    value  = $varNode
+                    line   = $opToken.line
+                    column = $opToken.columnStart
                 }
             }
-            else {
-                $varNode = New-ASTNode "Variable" @{
-                    name   = $identToken.value
-                    line   = $identToken.line
-                    column = $identToken.columnStart
-                }
-                $next2 = PeekToken
-                if ($next2 -and $next2.type -eq "Operator" -and ($next2.value -in @("++","--"))) {
-                    $opToken = NextToken
-                    return New-ASTNode "UnaryOp" @{
-                        op     = $opToken.value
-                        value  = $varNode
-                        line   = $opToken.line
-                        column = $opToken.columnStart
-                    }
-                }
-                else {
-                    return $varNode
-                }
-            }
+            return $varNode
         }
         "Keyword" {
             $kwToken = NextToken
-            if ($kwToken.value -in @("if","while","for")) {
+            if ($kwToken.value -in @("if", "while", "for")) {
                 throw ("Parse Error [line {0}, col {1}]: Unexpected keyword '{2}' in expression." `
                        -f $kwToken.line, $kwToken.columnStart, $kwToken.value)
             }
@@ -293,11 +385,18 @@ function ParsePrimary() {
             if ($token.value -eq "(") {
                 NextToken | Out-Null
                 $expr = ParseExpression
-                ExpectToken ")"
+                $dummy = ExpectToken ")"
                 return $expr
             }
+            elseif ($token.value -eq "[") {
+                return ParseArrayLiteral
+            }
+            elseif ($token.value -eq "{") {
+                return ParseObjectLiteral
+            }
             else {
-                throw ("Parse Error [line {0}, col {1}]: Unexpected token '{2}' ({3})." -f $token.line, $token.columnStart, $token.value, $token.type)
+                throw ("Parse Error [line {0}, col {1}]: Unexpected token '{2}' ({3})." `
+                       -f $token.line, $token.columnStart, $token.value, $token.type)
             }
         }
     }
@@ -354,6 +453,38 @@ function ParseStatement() {
     }
 }
 
+function ParsePSBlock() {
+    $openBrace = NextToken  # consume '{'
+    $rawCode = ""
+    $braceCount = 1
+    # Define symbols that should be concatenated with no extra space.
+    $noSpaceSymbols = @("(", ")", "{", "}", "[", "]", "$", ".", ",", ";", ":", "+", "-", "*", "/", "%", "=", "<", ">", "!", "++", "--")
+    while ($braceCount -gt 0) {
+        $token = NextToken
+        if (-not $token) { throw "Parse Error: Missing closing '}' for PS block." }
+        if ($token.value -eq "{") {
+            $braceCount++
+        }
+        elseif ($token.value -eq "}") {
+            $braceCount--
+            if ($braceCount -eq 0) { break }
+        }
+        # Append token.value without extra space if token is in the no-space list; otherwise add a space.
+        if ($noSpaceSymbols -contains $token.value) {
+            $rawCode += $token.value
+        }
+        else {
+            $rawCode += $token.value + " "
+        }
+    }
+    $rawCode = $rawCode.Trim()
+    return New-ASTNode "PSBlock" @{
+        code   = $rawCode
+        line   = $openBrace.line
+        column = $openBrace.columnStart
+    }
+}
+
 function ParseBlock() {
     $openBrace = PeekToken
     if (-not $openBrace -or $openBrace.value -ne "{") {
@@ -376,9 +507,9 @@ function ParseBlock() {
 
 function ParseIfStatement() {
     $ifToken = NextToken
-    ExpectToken "("
+    $dummy = ExpectToken "("
     $condition = ParseExpression
-    ExpectToken ")"
+    $dummy = ExpectToken ")"
     $thenBlock = ParseBlock
     $elseBlock = @()
     $next = PeekToken
@@ -397,9 +528,9 @@ function ParseIfStatement() {
 
 function ParseWhileStatement() {
     $whileToken = NextToken
-    ExpectToken "("
+    $dummy = ExpectToken "("
     $condition = ParseExpression
-    ExpectToken ")"
+    $dummy = ExpectToken ")"
     $body = ParseBlock
     return New-ASTNode "While" @{
         condition = $condition
@@ -411,7 +542,7 @@ function ParseWhileStatement() {
 
 function ParseForStatement() {
     $forToken = NextToken
-    ExpectToken "("
+    $dummy = ExpectToken "("
     $init = $null
     $peek = PeekToken
     if ($peek -and $peek.value -ne ";") {
@@ -428,22 +559,27 @@ function ParseForStatement() {
             }
         }
         else {
-            $init = $lhs
+            # Wrap the raw expression in an ExprStmt so it is recognized later.
+            $init = New-ASTNode "ExprStmt" @{
+                expression = $lhs
+                line       = $lhs.line
+                column     = $lhs.column
+            }
         }
     }
-    ExpectToken ";"
+    $dummy = ExpectToken ";"
     $condition = $null
     $peek = PeekToken
     if ($peek -and $peek.value -ne ";") {
         $condition = ParseExpression
     }
-    ExpectToken ";"
+    $dummy = ExpectToken ";"
     $update = $null
     $peek = PeekToken
     if ($peek -and $peek.value -ne ")") {
         $update = ParseExpression
     }
-    ExpectToken ")"
+    $dummy = ExpectToken ")"
     $body = ParseBlock
     return New-ASTNode "For" @{
         init      = $init
@@ -462,10 +598,10 @@ function ParseProgram() {
         $col  = if ($token) { $token.columnStart } else { "-" }
         throw ("Program must start with 'Main'. Found '{0}' at line {1}, col {2}." -f ($token.value), $line, $col)
     }
-    ExpectToken "("
+    $dummy = ExpectToken "("
     $paramToken = NextToken
     if (-not $paramToken) { throw "Parse Error: Missing parameter in Main(...)" }
-    ExpectToken ")"
+    $dummy = ExpectToken ")"
     $body = ParseBlock
     if (PeekToken -ne $null) {
         throw "Parse Error: Extra tokens remain in the input."
@@ -485,39 +621,47 @@ $global:Env = @{}
 function Builtin_print($printv) {
     $output = ""
     foreach ($p in $printv) {
-        $processed = $p -replace '\\n', "`n"
-        $output += [string]$processed
+        # Check if the value is an array or a hashtable (object)
+        if ($p -is [array] -or $p -is [hashtable]) {
+            # Convert to a JSON-like string
+            $processed = $p | ConvertTo-Json -Compress
+        }
+		# Replace literal "\n" with an actual newline if needed
+		$processed = $p -replace '\\n', "`n"
+        $output += $processed
     }
     Write-Host -NoNewline $output
     return $null
 }
 
+# Aparently the only way to remove the colon from Read-Host prompts is to overide it :( 
+function Read-Host($prompt) {
+  Write-Host "$prompt" -NoNewline
+  Microsoft.PowerShell.Utility\Read-Host
+}
 function Builtin_input($printv) {
-    if ($printv.Count -ge 1) {
-        return Read-Host -Prompt ([string]$printv[0])
-    }
-    return Read-Host
+    return Read-Host $printv[0]
 }
 
-function Builtin_parseInt($parseInt) {
-    if ($parseInt.Count -ge 1) { return [int]$parseInt[0] }
-    return 0
-}
-
-function Builtin_len($len) {
+function Builtin_len {
+	param(
+	$len, 
+	$type
+	)
     if ($len.Count -ge 1) {
-        $arg = $len[0]
-        if ($arg -is [string]) { return $arg.Length }
-        elseif ($arg -is [array]) { return $arg.Length }
+        if ($type -eq [string]) { 
+			$arg = [string]$len
+			return $arg.Length 
+		}
+        elseif ($type -is [object]) { return $len.Count }
     }
     return 0
 }
 
 $global:BuiltinFuncs = @{
-    "print"    = { Builtin_print $args }
-    "input"    = { Builtin_input $args }
-    "parseInt" = { Builtin_parseInt $args }
-    "len"      = { Builtin_len $args }
+    "print"    = { param($value, $ignored = $null) Builtin_print $value }
+    "input"    = { param($value, $ignored = $null) Builtin_input $value }
+    "len"      = { param($value, $type) Builtin_len $value $type }
 }
 
 function EvalExpression($node) {
@@ -531,6 +675,45 @@ function EvalExpression($node) {
             else {
                 throw ("Runtime Error [line {0}, col {1}]: Variable '{2}' not defined." -f $node.line, $node.column, $n)
             }
+        }
+		"PSBlock" {
+			$code = $node.code.Trim()
+			
+			# For each variable in the global environment, replace all occurrences of
+			# the pattern ${{ key }} with its value (converted to a string).
+			foreach ($key in $global:Env.Keys) {
+				 $pattern = "\$\{\{\s*$key\s*\}\}"
+				 $replacement = $global:Env[$key].ToString()
+				 $code = $code -replace $pattern, $replacement
+			}
+
+			# If no explicit "return" is found anywhere in the code, append one.
+			if ($code -notmatch '\breturn\b') {
+				 $code = $code + "; return $null"
+			}
+			
+			# (Optional) For debugging, output the final code:
+			# Write-Host "PSBlock code: $code"
+			
+			$sb = [scriptblock]::Create($code)
+			$result = & $sb
+			return $result
+		}
+		"ArrayAccess" {
+			$baseValue = EvalExpression $node.base
+			$indexValue = EvalExpression $node.index
+			# If the base value is a string, convert the indexed char to a string.
+			if ($baseValue -is [string]) {
+				return [string]$baseValue[$indexValue]
+			}
+			else {
+				return $baseValue[$indexValue]
+			}
+		}
+        "PropertyAccess" {
+            $baseValue = EvalExpression $node.base
+            $propName = $node.property
+            return $baseValue[$propName]
         }
         "BinaryOp" {
             $l = EvalExpression $node.left
@@ -561,11 +744,11 @@ function EvalExpression($node) {
             $val = EvalExpression $node.value
             switch ($node.op) {
                 "++" { 
-                    $global:Env[$node.value.name] = $val + 1
+                    $global:Env[$node.value.name] = [int]$val + 1
                     return $val 
                 }
                 "--" { 
-                    $global:Env[$node.value.name] = $val - 1
+                    $global:Env[$node.value.name] = [int]$val - 1
                     return $val 
                 }
                 default {
@@ -578,11 +761,25 @@ function EvalExpression($node) {
             $vals = @()
             foreach ($a in $node.args) { $vals += EvalExpression $a }
             if ($global:BuiltinFuncs.ContainsKey($fname)) {
-                return & $global:BuiltinFuncs[$fname] $vals
+                return & $global:BuiltinFuncs[$fname] $vals $global:Env[$node.args.name].getType().name
             }
             else {
                 throw ("Runtime Error [line {0}, col {1}]: Undefined function '{2}'" -f $node.line, $node.column, $fname)
             }
+        }
+        "ArrayLiteral" {
+            $result = @()
+            foreach ($element in $node.elements) {
+                $result += EvalExpression $element
+            }
+            return $result
+        }
+        "ObjectLiteral" {
+            $result = @{}
+            foreach ($key in $node.properties.Keys) {
+                $result[$key] = EvalExpression $node.properties[$key]
+            }
+            return $result
         }
         default {
             throw ("Runtime Error [line {0}, col {1}]: Unknown expression type: {2}" -f ($node.line -or "-"), ($node.column -or "-"), $node.type)

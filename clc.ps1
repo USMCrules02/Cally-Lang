@@ -291,19 +291,14 @@ function ParsePrimary() {
     $token = PeekToken
     if (-not $token) { throw "Parse Error: Unexpected end of input in expression." }
     
-    # NEW: Check for the p{ ... } construct.
     if ($token.type -eq "Identifier" -and $token.value -eq "p") {
-        # Peek ahead: if the next token is "{" then we parse the PS block.
         $next = PeekToken
-        # Note: since "p" is an identifier, it’s already returned by PeekToken.
-        # We need to consume the "p" token and then ensure that the next token is "{"
         $dummy = NextToken  # consume "p"
         $next = PeekToken
         if ($next -and $next.value -eq "{") {
             return ParsePSBlock
         }
         else {
-            # If "p" is not followed by a block, treat it as a normal variable.
             return New-ASTNode "Variable" @{
                 name = "p"
                 line = $token.line
@@ -689,21 +684,15 @@ function EvalExpression($node) {
 		"PSBlock" {
 			$code = $node.code.Trim()
 			
-			# For each variable in the global environment, replace all occurrences of
-			# the pattern ${{ key }} with its value (converted to a string).
 			foreach ($key in $global:Env.Keys) {
 				 $pattern = "\$\{\{\s*$key\s*\}\}"
 				 $replacement = $global:Env[$key].ToString()
 				 $code = $code -replace $pattern, $replacement
 			}
-
-			# If no explicit "return" is found anywhere in the code, append one.
+			
 			if ($code -notmatch '\breturn\b') {
 				 $code = $code + "; return $null"
 			}
-			
-			# (Optional) For debugging, output the final code:
-			# Write-Host "PSBlock code: $code"
 			
 			$sb = [scriptblock]::Create($code)
 			$result = & $sb
